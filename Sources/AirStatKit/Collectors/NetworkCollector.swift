@@ -12,7 +12,11 @@ public final class NetworkCollector: MetricSource {
     public typealias Output = NetworkSnapshot
 
     public let identifier: CollectorID = .network
-    public let preferredInterval: TimeInterval = 1.0
+    public let preferredInterval: TimeInterval = NetworkCollector.fastestInterval
+
+    /// Named so the internet check's settings line can quote how often it really pings:
+    /// below this the network is not sampled any faster, whatever the update interval.
+    static let fastestInterval: TimeInterval = 1.0
 
     /// CoreWLAN is an XPC round trip to `wifid` per property: a full link-quality read
     /// measures ~7 ms idle on an M3 Pro and up to 20 ms when the machine is busy, which
@@ -105,10 +109,20 @@ public final class NetworkCollector: MetricSource {
     private var lastWiFiRead: ContinuousClock.Instant?
     private var wifiInterfaceName: String?
 
-    /// Owns the one outbound request this app makes. Idle until the user turns
-    /// `general.fetchesPublicIP` on; see `PublicIPFetcher` for the endpoint and the
+    /// Owns one of the two kinds of outbound request this collector makes. Idle until the user
+    /// turns `general.fetchesPublicIP` on; see `PublicIPFetcher` for the endpoint and the
     /// throttle, both of which are its business rather than this collector's.
     private let publicIPLookup = PublicIPFetcher()
+
+    /// Owns the other: the opt-in internet check. It rides this collector's samples
+    /// rather than keeping a timer, so it runs exactly when the network readouts do.
+    private let connectivity = ConnectivityProbe()
+
+    /// Raised by a wake or a restart and lowered only once the probe has been told. The
+    /// engine's wake flag lasts one sample, and a sample that fails before reaching the
+    /// probe would spend it: the next one would carry no flag, and a reply queued in the
+    /// socket before the lid closed would be read as an answer about now.
+    private var connectivityOwesResume = true
 
     public init() {}
 
@@ -116,6 +130,12 @@ public final class NetworkCollector: MetricSource {
     /// no way to read the settings store and no business acquiring one.
     func setPublicIPLookupEnabled(_ enabled: Bool) {
         publicIPLookup.setEnabled(enabled)
+    }
+
+    /// Pushed in the same way, and for the same reason. It also changes with what is on
+    /// screen, since the check runs only while something shows its answer.
+    func setConnectivityCheck(_ check: ConnectivityCheck) {
+        connectivity.configure(check)
     }
 
     public func start() {
@@ -144,6 +164,7 @@ public final class NetworkCollector: MetricSource {
         // invent a rate and pollute the session totals, so every counter re-baselines.
         for name in baselines.keys { baselines[name]?.reset() }
         needsBaseline = true
+        connectivityOwesResume = true
 
         // The first CoreWLAN call of the process pays for the XPC connection to wifid on
         // top of the query — ~20 ms against ~7 ms warm. Spending it here keeps it off the
@@ -165,6 +186,8 @@ public final class NetworkCollector: MetricSource {
         lastPortScan = nil
         wifi = nil
         wifiInterfaceName = nil
+        // Nothing on screen needs the network now, so the socket goes too.
+        connectivity.stop()
     }
 
     /// Every sample runs inside its own autorelease pool.
@@ -179,6 +202,7 @@ public final class NetworkCollector: MetricSource {
     }
 
     private func sample(context: SampleContext) -> MetricState<NetworkSnapshot> {
+        if context.isFirstSample || context.didWakeFromSleep { connectivityOwesResume = true }
         var links: [Link]
         switch readLinks() {
         case .success(let value): links = value
@@ -256,6 +280,17 @@ public final class NetworkCollector: MetricSource {
         // they should be dropped.
         pruneVanishedInterfaces(links)
 
+        // Also before the early return, which every first sample takes: the request this
+        // sample sends is what lets the next one, the first the menu bar draws, carry an
+        // answer already. The primary link is the same one the status dots read.
+        let primaryName = primaryInterfaceName()
+        let primaryLink = primaryName.flatMap { name in links.first { $0.name == name } }
+        connectivity.advance(path: ConnectivityPath(interface: primaryLink?.name, ipv4: primaryLink?.ipv4),
+                             now: Monotonic.now,
+                             isResuming: connectivityOwesResume,
+                             isLowPower: ProcessInfo.processInfo.isLowPowerModeEnabled)
+        connectivityOwesResume = false
+
         // With no countable interface at all there is genuinely nothing flowing, and 0 is
         // the measurement. Otherwise a missing rate means no usable baseline, not zero.
         guard countedInterfaces == 0 || ratedInterfaces > 0 else {
@@ -279,7 +314,6 @@ public final class NetworkCollector: MetricSource {
         // a server on the far side of the internet.
         publicIPLookup.refreshIfDue()
 
-        let primaryName = primaryInterfaceName()
         let primary = primaryName.flatMap { name in stats.first { $0.name == name } }
         sort(&stats, primaryName: primaryName)
 
@@ -300,7 +334,8 @@ public final class NetworkCollector: MetricSource {
             // contacting a third party is not something a sampling tick should do. This
             // is the cached answer of the opt-in fetcher above, read under its lock.
             publicIP: publicIPLookup.currentState(),
-            isVPNActive: vpnActive))
+            isVPNActive: vpnActive,
+            connectivity: connectivity.currentState))
     }
 
     // MARK: Kernel counters

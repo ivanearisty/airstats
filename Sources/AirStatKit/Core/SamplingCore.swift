@@ -150,6 +150,7 @@ public final class SamplingCore: @unchecked Sendable {
     private var activity: SamplingActivity = .menuBar
     private var enabledSources: Set<CollectorID> = Set(CollectorID.allCases)
     private var publicIPLookupEnabled = false
+    private var connectivityCheck: ConnectivityCheck = .off
     private var pendingWakeFlag = false
     private var isRunning = false
     private var thermalCadenceMultiplier = 1.0
@@ -161,13 +162,16 @@ public final class SamplingCore: @unchecked Sendable {
         public let baseInterval: TimeInterval
         public let enabledSources: Set<CollectorID>
         public let publicIPLookupEnabled: Bool
+        public let connectivity: ConnectivityCheck
 
         public init(baseInterval: TimeInterval,
                     enabledSources: Set<CollectorID>,
-                    publicIPLookupEnabled: Bool) {
+                    publicIPLookupEnabled: Bool,
+                    connectivity: ConnectivityCheck = .off) {
             self.baseInterval = baseInterval
             self.enabledSources = enabledSources
             self.publicIPLookupEnabled = publicIPLookupEnabled
+            self.connectivity = connectivity
         }
     }
 
@@ -251,13 +255,24 @@ public final class SamplingCore: @unchecked Sendable {
         }
     }
 
-    /// Turns the public IP lookup on or off. The one collector behaviour the user has
-    /// to opt into, so it is pushed down here rather than read from settings by the
-    /// collector: this queue is the only place a collector's state may be touched.
+    /// Turns the public IP lookup on or off. One of the two collector behaviours the
+    /// user has to opt into, with the internet check, so it is pushed down here rather
+    /// than read from settings by the collector: this queue is the only place a
+    /// collector's state may be touched.
     public func setPublicIPLookupEnabled(_ enabled: Bool) {
         queue.async { [self] in
             publicIPLookupEnabled = enabled
             networkSlot.source.setPublicIPLookupEnabled(enabled)
+        }
+    }
+
+    /// Starts, retargets or stops the internet check. Separate from `apply` because the
+    /// check also follows what is on screen, which changes without any setting changing.
+    public func setConnectivityCheck(_ check: ConnectivityCheck) {
+        queue.async { [self] in
+            guard check != connectivityCheck else { return }
+            connectivityCheck = check
+            networkSlot.source.setConnectivityCheck(check)
         }
     }
 
@@ -323,18 +338,25 @@ public final class SamplingCore: @unchecked Sendable {
         let sourcesChanged = configuration.enabledSources != enabledSources
         let intervalChanged = clamped != baseInterval
         let publicIPChanged = configuration.publicIPLookupEnabled != publicIPLookupEnabled
+        let connectivityChanged = configuration.connectivity != connectivityCheck
 
         baseInterval = clamped
         enabledSources = configuration.enabledSources
         publicIPLookupEnabled = configuration.publicIPLookupEnabled
+        connectivityCheck = configuration.connectivity
         forEachSlot { slot in
             if removed.contains(slot.identifier) { slot.suspend() }
         }
         if publicIPChanged {
             networkSlot.source.setPublicIPLookupEnabled(configuration.publicIPLookupEnabled)
         }
+        if connectivityChanged {
+            networkSlot.source.setConnectivityCheck(configuration.connectivity)
+        }
         if intervalChanged { rescheduleTimerLocked() }
-        if isRunning && (sourcesChanged || intervalChanged || publicIPChanged) { sampleLocked() }
+        if isRunning && (sourcesChanged || intervalChanged || publicIPChanged || connectivityChanged) {
+            sampleLocked()
+        }
     }
 
     private func sampleLocked(force: Bool = false) {

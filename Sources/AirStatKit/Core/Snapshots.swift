@@ -285,6 +285,37 @@ public struct WiFiInfo: Sendable, Equatable, Hashable {
     }
 }
 
+/// What the connectivity check last found.
+///
+/// Offline is a reading, not a failure: the check ran and the internet did not answer,
+/// which is a fact as solid as a temperature. The states where nothing is known — the
+/// check is off, or still waiting for its first answer — are `MetricState` failures
+/// around this, exactly as for every other metric.
+public struct ConnectivityReading: Sendable, Equatable {
+    public enum Status: Sendable, Equatable {
+        case online, offline
+    }
+
+    public var status: Status
+    /// Round trip of the newest answer, measured by the kernel for ping and by
+    /// URLSession's completion for HTTPS. Nil when offline, and nil rather than a guess
+    /// when the answer arrived without a usable timestamp.
+    public var latency: TimeInterval?
+    public var target: ConnectivityTarget
+    /// Why it is offline, in a few words. Nil when online.
+    public var detail: String?
+
+    public var isOnline: Bool { status == .online }
+
+    public init(status: Status, latency: TimeInterval? = nil, target: ConnectivityTarget,
+                detail: String? = nil) {
+        self.status = status
+        self.latency = latency
+        self.target = target
+        self.detail = detail
+    }
+}
+
 public struct NetworkSnapshot: Sendable, Equatable {
     public var uploadBytesPerSecond: Double
     public var downloadBytesPerSecond: Double
@@ -301,6 +332,9 @@ public struct NetworkSnapshot: Sendable, Equatable {
     public var localIPv4: String?
     public var publicIP: MetricState<String>
     public var isVPNActive: Bool
+    /// The opt-in internet check. `.denied` while it is off (`checkOff`), which is the
+    /// state the panel and the widget read as "leave the row out".
+    public var connectivity: MetricState<ConnectivityReading>
 
     public init(uploadBytesPerSecond: Double = 0, downloadBytesPerSecond: Double = 0,
                 totalUploadBytes: UInt64 = 0, totalDownloadBytes: UInt64 = 0,
@@ -308,7 +342,8 @@ public struct NetworkSnapshot: Sendable, Equatable {
                 interfaces: [NetworkInterfaceStats] = [], primaryInterfaceName: String? = nil,
                 connectionType: ConnectionType = .none, wifi: WiFiInfo? = nil,
                 localIPv4: String? = nil, publicIP: MetricState<String> = .pending,
-                isVPNActive: Bool = false) {
+                isVPNActive: Bool = false,
+                connectivity: MetricState<ConnectivityReading> = .checkOff) {
         self.uploadBytesPerSecond = uploadBytesPerSecond
         self.downloadBytesPerSecond = downloadBytesPerSecond
         self.totalUploadBytes = totalUploadBytes
@@ -322,6 +357,7 @@ public struct NetworkSnapshot: Sendable, Equatable {
         self.localIPv4 = localIPv4
         self.publicIP = publicIP
         self.isVPNActive = isVPNActive
+        self.connectivity = connectivity
     }
 }
 

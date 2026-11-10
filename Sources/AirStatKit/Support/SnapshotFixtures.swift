@@ -32,7 +32,10 @@ public enum SnapshotFixtures {
             cpu: .value(cpu(busy: 0.97)),
             memory: .value(memory(usedFraction: 0.94, pressure: 0.88)),
             gpu: .value(gpu(utilization: 0.99)),
-            network: .value(network(down: 118_000_000, up: 44_000_000)),
+            // A saturated uplink is exactly when a cheap router's buffers push the round
+            // trip into the hundreds of milliseconds: slow, and still green.
+            network: .value(network(down: 118_000_000, up: 44_000_000,
+                                    connectivity: .value(online(latency: 0.184)))),
             disk: .value(disk(read: 940_000_000, write: 512_000_000, usedFraction: 0.97)),
             power: .value(power(percent: 8, charging: false)),
             thermal: .value(thermal(cpuTemp: 99, fanRPM: 6_400)),
@@ -70,7 +73,8 @@ public enum SnapshotFixtures {
             cpu: .value(cpu(busy: 0.21)),
             memory: .value(memory(usedFraction: 0.48, pressure: 0.26)),
             gpu: .value(gpu(utilization: 0.07)),
-            network: .value(network(down: 640_000, up: 91_000)),
+            network: .value(network(down: 640_000, up: 91_000,
+                                    connectivity: .value(online(latency: 0.012)))),
             disk: .value(disk(read: 2_100_000, write: 480_000, usedFraction: 0.71)),
             power: .value(power(percent: 34, charging: true)),
             thermal: .value(thermal(cpuTemp: 47, fanRPM: 1_460)),
@@ -82,6 +86,38 @@ public enum SnapshotFixtures {
 
     /// Nothing sampled yet — the first frame after launch.
     public static var pending: SystemSnapshot { SystemSnapshot() }
+
+    /// Associated to Wi-Fi with a good signal and an address, and the internet behind it
+    /// silent: the router is up and the line is not.
+    ///
+    /// Its own scenario because it is the one state that tells the internet light from
+    /// the link lights: those see a primary interface with a route out and stay green,
+    /// and only the check that asks past the router can say otherwise. The trickle of
+    /// traffic is what a Mac sends when nothing comes back.
+    public static var offline: SystemSnapshot {
+        SystemSnapshot(
+            cpu: .value(cpu(busy: 0.08)),
+            memory: .value(memory(usedFraction: 0.44, pressure: 0.22)),
+            gpu: .value(gpu(utilization: 0.03)),
+            network: .value(network(
+                down: 380, up: 1_240,
+                connectivity: .value(ConnectivityReading(status: .offline,
+                                                         target: .ping(ConnectivityTarget.defaultText),
+                                                         detail: "No reply from 1.1.1.1")))),
+            disk: .value(disk(read: 120_000, write: 64_000, usedFraction: 0.71)),
+            power: .value(power(percent: 76, charging: false)),
+            thermal: .value(thermal(cpuTemp: 44, fanRPM: 1_310)),
+            processes: .value(processes(topCPU: 6.1)),
+            system: .value(system()),
+            capturedAt: referenceDate
+        )
+    }
+
+    /// A ping to the shipped default that answered, the way the check reports it.
+    public static func online(latency: TimeInterval) -> ConnectivityReading {
+        ConnectivityReading(status: .online, latency: latency,
+                            target: .ping(ConnectivityTarget.defaultText))
+    }
 
     /// Every optional field the app charts or watches, filled in at once.
     ///
@@ -166,7 +202,11 @@ public enum SnapshotFixtures {
         ], primaryDeviceID: "builtin")
     }
 
-    public static func network(down: Double, up: Double) -> NetworkSnapshot {
+    /// The internet check answers by default, the way `publicIP` does below: both are
+    /// opt-in, and a fixture that left them off would never show the rows they fill in.
+    public static func network(down: Double, up: Double,
+                               connectivity: MetricState<ConnectivityReading>
+                                   = .value(online(latency: 0.009))) -> NetworkSnapshot {
         NetworkSnapshot(
             uploadBytesPerSecond: up,
             downloadBytesPerSecond: down,
@@ -191,7 +231,8 @@ public enum SnapshotFixtures {
             // A documentation-range address (RFC 5737), so the fixture shows the row the
             // opt-in lookup fills in without any machine's real address in the source.
             publicIP: .value("203.0.113.42"),
-            isVPNActive: false
+            isVPNActive: false,
+            connectivity: connectivity
         )
     }
 
