@@ -12,15 +12,21 @@ public enum MetricProbe {
         public var repeatCount: Int
         public var interval: TimeInterval
         public var verbose: Bool
+        /// Runs the internet check against this address while sampling the network.
+        /// Nil leaves it off, as a fresh install does: the probe contacts nothing unless
+        /// asked to on the command line.
+        public var connectivity: ConnectivityTarget?
 
         public init(collectors: Set<CollectorID> = Set(CollectorID.allCases),
                     repeatCount: Int = 2,
                     interval: TimeInterval = 1,
-                    verbose: Bool = false) {
+                    verbose: Bool = false,
+                    connectivity: ConnectivityTarget? = nil) {
             self.collectors = collectors
             self.repeatCount = max(1, repeatCount)
             self.interval = max(0.05, interval)
             self.verbose = verbose
+            self.connectivity = connectivity
         }
     }
 
@@ -37,6 +43,7 @@ public enum MetricProbe {
         let memory = MemoryCollector()
         let gpu = GPUCollector()
         let network = NetworkCollector()
+        if let target = options.connectivity { network.setConnectivityCheck(.active(target)) }
         let disk = DiskCollector()
         let power = PowerCollector()
         let thermal = ThermalCollector()
@@ -200,6 +207,10 @@ public enum MetricProbe {
             // The probe builds its own collector, so the lookup is off here unless a
             // test turns it on. Printing the state is how that stays visible.
             "public ip    \(s.publicIP.value ?? failureKind(s.publicIP.failure ?? .pending))",
+            // Off unless --connectivity names an address, for the same reason. The
+            // latency is printed to a tenth of a millisecond, finer than the menu bar
+            // shows, so it can be diffed against `ping` rather than merely eyeballed.
+            "internet     \(describeConnectivity(s.connectivity))",
         ]
         if let wifi = s.wifi {
             lines.append("wi-fi        ssid=\(wifi.ssid ?? "—") rssi=\(wifi.rssi.map(String.init) ?? "—") "
@@ -210,6 +221,21 @@ public enum MetricProbe {
                          + "\(interface.type.rawValue)  ↓\(fmt.networkRate(interface.downloadBytesPerSecond)) ↑\(fmt.networkRate(interface.uploadBytesPerSecond))")
         }
         return lines
+    }
+
+    private static func describeConnectivity(_ state: MetricState<ConnectivityReading>) -> String {
+        switch state {
+        case .value(let reading):
+            let via = reading.target.method == .ping
+                ? "ping \(reading.target.displayText)" : reading.target.displayText
+            if reading.isOnline {
+                let latency = reading.latency.map { String(format: "%.1f ms", $0 * 1000) } ?? "unmeasured"
+                return "online   \(latency)  (\(via))"
+            }
+            return "offline  \(reading.detail ?? "")  (\(via))"
+        case .failure(let failure):
+            return state.isCheckOff ? "off" : "\(failureKind(failure)): \(failure.message)"
+        }
     }
 
     private static func describeDisk(_ s: DiskSnapshot) -> [String] {

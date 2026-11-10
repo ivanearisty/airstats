@@ -3,14 +3,15 @@ import Foundation
 @testable import AirStatKit
 @testable import AirStatUI
 
-@Suite("The status dot style is offered to the up-and-down network readout and to nothing else")
+@Suite("The status dot style is offered to the two network-state readouts and to nothing else")
 struct StatusDotAvailabilityTests {
 
-    @Test("only network up and down offers it")
-    func onlyThroughputOffersIt() {
+    @Test("only network up and down, and the internet connection, offer it")
+    func onlyNetworkStateReadoutsOfferIt() {
         for metric in MenuBarMetric.allCases {
             let offered = metric.supportedStyles.contains(.statusDot)
-            #expect(offered == (metric == .networkThroughput), "\(metric) offered \(offered)")
+            let expected = metric == .networkThroughput || metric == .connectivity
+            #expect(offered == expected, "\(metric) offered \(offered)")
         }
     }
 

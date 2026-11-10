@@ -14,6 +14,7 @@ enum RenderCLI {
         var outputDirectory = URL(fileURLWithPath: "render", isDirectory: true)
         var collectedMinutes: Int?
         var withoutHistory = false
+        var differentiatesWithoutColor = false
         var settings = AirStatKit.Settings()
 
         var index = 0
@@ -70,6 +71,10 @@ enum RenderCLI {
             // because the fixtures come with a day of history.
             case "--no-history":
                 withoutHistory = true
+            // The system setting changes the menu bar's shapes, and a render process cannot
+            // read it from System Settings, so it is asked for here.
+            case "--without-color":
+                differentiatesWithoutColor = true
             case "--modules":
                 index += 1
                 let names = (arguments[safe: index] ?? "").split(separator: ",")
@@ -91,6 +96,22 @@ enum RenderCLI {
                     exit(2)
                 }
                 settings.panel.collapsedModules.subtract(parsed)
+            // The menu bar renders the shipped readouts unless told otherwise, and a
+            // readout nobody ships by default could not be reviewed at all without this.
+            // Each entry is a metric, optionally with a style: `connectivity:text`.
+            case "--readouts":
+                index += 1
+                guard let items = readouts(from: arguments[safe: index] ?? "") else {
+                    FileHandle.standardError.write(Data(
+                        "--readouts wants metric[:style],… with styles the metric supports\n".utf8))
+                    exit(2)
+                }
+                settings.menuBar.items = items
+                // Asking for the internet readout is asking to see it working: with the
+                // check off it would render as the dash, whatever the scenario says.
+                if items.contains(where: { $0.metric == .connectivity }) {
+                    settings.general.checksConnectivity = true
+                }
             case "--scenario":
                 index += 1
                 guard let scenario = OffscreenRenderer.Scenario(rawValue: arguments[safe: index] ?? "") else {
@@ -133,7 +154,8 @@ enum RenderCLI {
                             let request = OffscreenRenderer.Request(
                                 surface: surface, scenario: scenario,
                                 isDark: isDark, scale: scale, settings: settings,
-                                collectedMinutes: collectedMinutes, withoutHistory: withoutHistory)
+                                collectedMinutes: collectedMinutes, withoutHistory: withoutHistory,
+                                differentiatesWithoutColor: differentiatesWithoutColor)
                             do {
                                 let url = try OffscreenRenderer.render(request, to: outputDirectory)
                                 print(url.path)
@@ -152,6 +174,31 @@ enum RenderCLI {
             if !failures.isEmpty { exit(1) }
         }
     }
+}
+
+/// `cpuUsage,connectivity:text` into menu bar items, or nil when any entry names a
+/// metric that does not exist or a style that metric cannot draw. Refused rather than
+/// sanitised: a render of a different style than the one asked for would be reviewed as
+/// if it were the one asked for.
+private func readouts(from text: String) -> [MenuBarItemConfig]? {
+    let entries = text.split(separator: ",")
+    guard !entries.isEmpty else { return nil }
+    var items: [MenuBarItemConfig] = []
+    for entry in entries {
+        let parts = entry.split(separator: ":", omittingEmptySubsequences: false)
+        guard (1...2).contains(parts.count),
+              let metric = MenuBarMetric(rawValue: String(parts[0])) else { return nil }
+        let style: MenuBarDisplayStyle
+        if parts.count == 2 {
+            guard let named = MenuBarDisplayStyle(rawValue: String(parts[1])),
+                  metric.supportedStyles.contains(named) else { return nil }
+            style = named
+        } else {
+            style = metric.supportedStyles.first ?? .text
+        }
+        items.append(MenuBarItemConfig(metric: metric, style: style, showsCaption: style.supportsCaption))
+    }
+    return items
 }
 
 /// Accepts `#4C8DFF`, `4C8DFF` or `0.3,0.55,1`, so a colour can be pasted from either

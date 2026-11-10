@@ -76,6 +76,9 @@ public struct MenuBarItemRender: Equatable, Sendable {
     /// network one, and carried here for the reason the battery fields are: the view
     /// draws what it is handed, and nothing it fetches for itself.
     public var networkStatus: NetworkStatus?
+    /// The one light the Internet Connection readout draws in the `.statusDot` style.
+    /// Nil on every other readout.
+    public var connectivityLight: ConnectivityLight?
     /// The fraction the `.bar` style fills to, 0...1. Set only on the readouts that
     /// are a fraction of a known ceiling, and carried for the reason the battery
     /// charge is: the view draws what it is handed.
@@ -110,6 +113,16 @@ public struct MenuBarItemRender: Equatable, Sendable {
         }
     }
 
+    /// The internet light: the answer, or that there is none yet.
+    public enum ConnectivityLight: Equatable, Sendable {
+        case online
+        case offline
+        /// The check is on and has not answered since launch, wake or a change of
+        /// network. Drawn as a dim light rather than the unavailable dash: a dash is a
+        /// different width, and the item would resize every time the lid opened.
+        case checking
+    }
+
     /// Where the indicator turns red. 20% is where macOS itself first warns.
     public static let lowBatteryFraction = 0.20
 
@@ -123,6 +136,7 @@ public struct MenuBarItemRender: Equatable, Sendable {
                 isBatteryLow: Bool = false,
                 batteryValueText: String? = nil,
                 networkStatus: NetworkStatus? = nil,
+                connectivityLight: ConnectivityLight? = nil,
                 level: Double? = nil) {
         self.id = id
         self.style = style
@@ -138,6 +152,7 @@ public struct MenuBarItemRender: Equatable, Sendable {
         self.isBatteryLow = isBatteryLow
         self.batteryValueText = batteryValueText
         self.networkStatus = networkStatus
+        self.connectivityLight = connectivityLight
         self.level = level
     }
 
@@ -150,20 +165,30 @@ public struct MenuBarRenderModel: Equatable, Sendable {
     public var usesMonospacedDigits: Bool
     public var usesFixedWidth: Bool
     public var isStale: Bool
+    /// The system's Differentiate Without Color setting. Carried here rather than read by
+    /// the view while drawing, because the status item redraws only when this model
+    /// changes: a view that read it for itself would go on drawing the old shapes until
+    /// some reading happened to move.
+    public var differentiatesWithoutColor: Bool
 
     public var accessibilityDescription: String {
         items.map(\.accessibilityLabel).joined(separator: ", ")
     }
 
+    /// `isSamplingPaused` is true while the engine has stopped sampling with the menu bar
+    /// still on screen, which is the Low Power pause.
     public init(snapshot: SystemSnapshot,
                 history: MetricHistory,
                 settings: Settings,
-                isStale: Bool) {
+                isStale: Bool,
+                isSamplingPaused: Bool = false,
+                differentiatesWithoutColor: Bool = false) {
         let formatter = MetricFormatter(settings: settings.general)
         self.spacing = MenuBarSettings.itemSpacing
         self.usesMonospacedDigits = MenuBarSettings.usesMonospacedDigits
         self.usesFixedWidth = MenuBarSettings.usesFixedWidth
         self.isStale = isStale
+        self.differentiatesWithoutColor = differentiatesWithoutColor
 
         var rendered: [MenuBarItemRender] = []
         rendered.reserveCapacity(settings.menuBar.items.count)
@@ -172,7 +197,8 @@ public struct MenuBarRenderModel: Equatable, Sendable {
                                                       snapshot: snapshot,
                                                       history: history,
                                                       formatter: formatter,
-                                                      settings: settings))
+                                                      settings: settings,
+                                                      isSamplingPaused: isSamplingPaused))
         }
         self.items = rendered
     }
@@ -184,7 +210,8 @@ public struct MenuBarRenderModel: Equatable, Sendable {
                                snapshot: SystemSnapshot,
                                history: MetricHistory,
                                formatter: MetricFormatter,
-                               settings: Settings) -> MenuBarItemRender {
+                               settings: Settings,
+                               isSamplingPaused: Bool) -> MenuBarItemRender {
         let metric = config.metric
         let dash = MetricFormatter.unavailable
         let widest = formatter.widestSample(for: metric)
@@ -292,6 +319,22 @@ public struct MenuBarRenderModel: Equatable, Sendable {
                           secondary: secondary,
                           unavailable: unavailable, accessibility: accessibilityValue,
                           settings: settings, networkStatus: networkStatus)
+
+        case .connectivity:
+            let (light, text, spoken) = connectivity(snapshot.network, style: config.style,
+                                                     formatter: formatter,
+                                                     isOn: settings.general.checksConnectivity,
+                                                     isSamplingPaused: isSamplingPaused)
+            if light != nil {
+                valueText = text
+                unavailable = false
+            }
+            accessibilityValue = spoken
+            return finish(config: config, caption: caption(for: config),
+                          primary: MenuBarLine(valueText: valueText, widestText: widest),
+                          secondary: nil,
+                          unavailable: unavailable, accessibility: accessibilityValue,
+                          settings: settings, connectivityLight: light)
 
         case .networkUpload:
             if let net = snapshot.network.value {
@@ -403,6 +446,68 @@ public struct MenuBarRenderModel: Equatable, Sendable {
                       level: level.map { min(max($0, 0), 1) })
     }
 
+    /// The light, the text and the spoken value of the Internet Connection readout, or a
+    /// nil light when the readout is unavailable: the check is off, its address cannot be
+    /// used, or the network collector itself is unsupported here.
+    ///
+    /// The spoken value leaves the latency out for the light. The status item redraws
+    /// only when this model changes, and a round trip changes every sample; a label that
+    /// carried it would redraw a dot that looks the same every two seconds. The text
+    /// styles show the latency anyway, so their label may as well say it.
+    private static func connectivity(_ network: MetricState<NetworkSnapshot>,
+                                     style: MenuBarDisplayStyle,
+                                     formatter: MetricFormatter,
+                                     isOn: Bool,
+                                     isSamplingPaused: Bool)
+        -> (MenuBarItemRender.ConnectivityLight?, String, String) {
+        let checking: (MenuBarItemRender.ConnectivityLight?, String, String)
+            = (.checking, MetricFormatter.unavailable, "Internet connection checking")
+        // Read from settings rather than waited for: the status item redraws on a settings
+        // change, so switching the check off shows at once, even while sampling is paused
+        // and no sample is coming to say so.
+        guard isOn else { return (nil, "", "Internet check off") }
+        let state: MetricState<ConnectivityReading>
+        switch network {
+        case .value(let net): state = net.connectivity
+        // A network sample that failed this cycle, or the first one after a wake, says
+        // nothing about the internet either way.
+        case .failure(let failure):
+            return failure.isPermanent ? (nil, "", "Internet Connection unavailable") : checking
+        }
+        switch state {
+        case .value:
+            // A paused app shows the last real numbers, and a number is honest about being
+            // old. A light is a claim about now, and nothing is checking it.
+            if isSamplingPaused { return (.checking, MetricFormatter.unavailable, "Internet check paused") }
+            guard case .value(let reading) = state else { return checking }
+            if reading.isOnline {
+                // The light draws no text, so its model carries none that changes: the
+                // same redraw rule as the label, applied to the value it never shows.
+                guard style != .statusDot else { return (.online, "Online", "Internet online") }
+                let latency = reading.latency.map { formatter.latency($0) }
+                return (.online, latency ?? "Online",
+                        "Internet online" + (latency.map { ", \($0)" } ?? ""))
+            }
+            return (.offline, "Offline",
+                    "Internet offline" + (reading.detail.map { ", \(sentenceCase($0))" } ?? ""))
+        case .failure(.pending):
+            return checking
+        case .failure(.denied):
+            return (nil, "", "Internet check off")
+        case .failure(let failure):
+            return (nil, "", "Internet check unavailable, \(sentenceCase(failure.message))")
+        }
+    }
+
+    /// A reason as it reads after a comma: its first letter lowered, the rest untouched,
+    /// so "No reply from 1.1.1.1" joins the sentence and "IPv4" stays "IPv4".
+    private static func sentenceCase(_ text: String) -> String {
+        guard let first = text.first, !text.dropFirst().prefix(1).allSatisfy(\.isUppercase) else {
+            return text
+        }
+        return first.lowercased() + text.dropFirst()
+    }
+
     /// What the battery indicator draws, gathered in one place so the three fields can
     /// only ever be set together.
     private struct BatteryState {
@@ -421,6 +526,7 @@ public struct MenuBarRenderModel: Equatable, Sendable {
                                settings: Settings,
                                battery: BatteryState? = nil,
                                networkStatus: MenuBarItemRender.NetworkStatus? = nil,
+                               connectivityLight: MenuBarItemRender.ConnectivityLight? = nil,
                                level: Double? = nil) -> MenuBarItemRender {
         MenuBarItemRender(
             id: config.id,
@@ -441,6 +547,7 @@ public struct MenuBarRenderModel: Equatable, Sendable {
             isBatteryLow: battery?.isLow ?? false,
             batteryValueText: battery?.valueText,
             networkStatus: networkStatus,
+            connectivityLight: connectivityLight,
             level: level
         )
     }
@@ -480,6 +587,9 @@ public struct MenuBarRenderModel: Equatable, Sendable {
         case .networkThroughput: return nil
         case .networkUpload: return "NET ↑"
         case .networkDownload: return "NET ↓"
+        // What the number under it is, in the word every game and speed test uses for a
+        // round trip, whichever way the check asks.
+        case .connectivity: return "PING"
         case .diskActivity: return nil
         case .diskFree: return "FREE"
         case .battery: return "BATT"
@@ -580,6 +690,7 @@ public struct MenuBarRenderModel: Equatable, Sendable {
         case .memoryUsage, .memoryPressure: return "memorychip"
         case .gpuUsage: return "cube.transparent"
         case .networkThroughput, .networkUpload, .networkDownload: return "network"
+        case .connectivity: return "globe"
         case .diskActivity, .diskFree: return "internaldrive"
         case .battery, .batteryTime: return "battery.100"
         case .systemPower: return "bolt"

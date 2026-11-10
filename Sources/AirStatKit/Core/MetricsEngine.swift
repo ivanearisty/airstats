@@ -191,6 +191,14 @@ public final class MetricsEngine {
         } else {
             newActivity = .menuBar
         }
+        // The panel and the widget both show the check's answer, so opening or closing
+        // either can start or stop it, exactly as it can a collector. Pushed before the
+        // early return, because a widget shown or hidden under an open panel changes
+        // the answer without changing the activity; an unchanged check costs a queue hop.
+        // And queued before the activity change, which runs the one immediate sample a
+        // surface gets on opening: the request sent on that sample is what lets the answer
+        // arrive a sample later instead of two. It runs no sample of its own.
+        core?.setConnectivityCheck(currentConnectivityCheck)
         guard newActivity != activity else { return }
         activity = newActivity
         core?.setActivity(newActivity)
@@ -226,6 +234,11 @@ public final class MetricsEngine {
     private var currentRequiredSources: Set<CollectorID> {
         settingsStore.settings.requiredSources(panelVisible: isPanelVisible,
                                                desktopWidgetVisible: isDesktopWidgetVisible)
+    }
+
+    private var currentConnectivityCheck: ConnectivityCheck {
+        settingsStore.settings.connectivityCheck(panelVisible: isPanelVisible,
+                                                 desktopWidgetVisible: isDesktopWidgetVisible)
     }
 
     // MARK: Settings
@@ -314,7 +327,7 @@ public final class MetricsEngine {
     /// Re-pushes the whole configuration, and is called for *any* accepted settings
     /// change: the engine wakes on `settingsStore.revision`, which bumps on every
     /// mutation. Changing a desktop widget colour re-pushes the interval, the enabled-source
-    /// set and the public IP flag.
+    /// set, the public IP flag and the internet check.
     ///
     /// That is harmless only because every setter it calls early-returns on an
     /// unchanged value, so the redundant pushes cost a few queue hops. Anything added
@@ -324,7 +337,8 @@ public final class MetricsEngine {
         let s = settingsStore.settings
         core?.apply(.init(baseInterval: s.general.updateInterval,
                           enabledSources: currentRequiredSources,
-                          publicIPLookupEnabled: s.general.fetchesPublicIP))
+                          publicIPLookupEnabled: s.general.fetchesPublicIP,
+                          connectivity: currentConnectivityCheck))
         // Turning the pause off has to resume sampling now, not at whatever UI
         // transition happens to call `updateActivity` next.
         updateActivity()

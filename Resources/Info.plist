@@ -32,6 +32,8 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>AirStats</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>The internet check pings or asks the address you chose in General settings. Allow this if that address is on your local network.</string>
 	<key>NSSupportsAutomaticTermination</key>
 	<false/>
 	<key>NSSupportsSuddenTermination</key>

@@ -26,7 +26,7 @@ public enum OffscreenRenderer {
     }
 
     public enum Scenario: String, CaseIterable, Sendable {
-        case nominal, underLoad, charging, degraded, pending
+        case nominal, underLoad, charging, degraded, pending, offline
 
         public var snapshot: SystemSnapshot {
             switch self {
@@ -35,13 +35,19 @@ public enum OffscreenRenderer {
             case .charging: return SnapshotFixtures.charging
             case .degraded: return SnapshotFixtures.degraded
             case .pending: return SnapshotFixtures.pending
+            case .offline: return SnapshotFixtures.offline
             }
         }
 
         /// The pending state has no history by definition; everything else gets a
         /// realistic waveform so charts are exercised.
         public var history: MetricHistory {
-            self == .pending ? MetricHistory() : SnapshotFixtures.history()
+            switch self {
+            // Offline has no recent traffic to chart: the fixture's busy waveform would
+            // light the download dot and draw megabytes beside "Offline".
+            case .pending, .offline: return MetricHistory()
+            default: return SnapshotFixtures.history()
+            }
         }
 
         public func dayHistory(collectedMinutes: Int? = nil) -> MinuteHistory {
@@ -61,10 +67,14 @@ public enum OffscreenRenderer {
         /// Live readings with no history behind them: the first seconds after launch,
         /// when every chart is still collecting.
         public var withoutHistory: Bool
+        /// The system's Differentiate Without Color setting, which changes the shapes the
+        /// menu bar draws and cannot be turned on for a render from System Settings.
+        public var differentiatesWithoutColor: Bool
 
         public init(surface: Surface, scenario: Scenario = .nominal, isDark: Bool = false,
                     scale: CGFloat = 2, settings: AirStatKit.Settings = AirStatKit.Settings(),
-                    collectedMinutes: Int? = nil, withoutHistory: Bool = false) {
+                    collectedMinutes: Int? = nil, withoutHistory: Bool = false,
+                    differentiatesWithoutColor: Bool = false) {
             self.surface = surface
             self.scenario = scenario
             self.isDark = isDark
@@ -72,10 +82,12 @@ public enum OffscreenRenderer {
             self.settings = settings
             self.collectedMinutes = collectedMinutes
             self.withoutHistory = withoutHistory
+            self.differentiatesWithoutColor = differentiatesWithoutColor
         }
 
         public var fileName: String {
-            "\(surface.label)-\(scenario.rawValue)-\(isDark ? "dark" : "light")@\(Int(scale))x.png"
+            let shapes = differentiatesWithoutColor ? "-shapes" : ""
+            return "\(surface.label)-\(scenario.rawValue)-\(isDark ? "dark" : "light")\(shapes)@\(Int(scale))x.png"
         }
     }
 
@@ -122,7 +134,8 @@ public enum OffscreenRenderer {
         let model = MenuBarRenderModel(snapshot: request.scenario.snapshot,
                                        history: request.scenario.history,
                                        settings: request.settings,
-                                       isStale: false)
+                                       isStale: false,
+                                       differentiatesWithoutColor: request.differentiatesWithoutColor)
         let view = MenuBarContentView(frame: .zero)
         view.appearance = appearance
         view.update(with: model)

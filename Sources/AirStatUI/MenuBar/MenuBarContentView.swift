@@ -103,6 +103,9 @@ public final class MenuBarContentView: NSView {
         /// An idle light is drawn, not hidden: a missing dot and a dark dot are not
         /// the same thing, and the pair is what makes the shape legible.
         static let statusDotIdleAlpha: CGFloat = 0.3
+        /// The internet light's offline ring under Differentiate Without Color. One point,
+        /// not one pixel: at 2x a device-pixel stroke on a five-point circle is a hairline.
+        static let statusRingStroke: CGFloat = 1
         /// The level bar: a pill as tall as its three stacked caption letters, filled
         /// from the bottom. Nine wide is the narrowest that leaves a five-point fill
         /// inside the shell, which is still a column at 1x rather than a line, and
@@ -313,7 +316,8 @@ public final class MenuBarContentView: NSView {
             return geometry
         }
 
-        // The two lights are the whole reading, and nothing else is drawn.
+        // The lights are the whole reading, and nothing else is drawn. One light or two,
+        // the column is one dot wide.
         if item.style == .statusDot {
             geometry.statusDot = Layout.statusDotDiameter
             return geometry
@@ -639,7 +643,13 @@ public final class MenuBarContentView: NSView {
         /// Nil whenever the item draws in the bar's own tint, which is the overwhelming
         /// majority of frames.
         private func override(for item: MenuBarItemRender) -> NSColor? {
-            if item.isUnavailable {
+            // An internet readout still waiting for its first answer draws its dash as
+            // quietly as every other missing value, but keeps its reserved width rather
+            // than collapsing to the unavailable one: the answer is a sample away, and
+            // the bar should not move twice for it. The light carries its own dim ink,
+            // so it is left out.
+            let isChecking = item.connectivityLight == .checking && item.style != .statusDot
+            if item.isUnavailable || isChecking {
                 return base.withAlphaComponent(base.alphaComponent * Layout.unavailableAlpha)
             }
             // The menu bar is a monochrome surface and stays one by default. A colour
@@ -655,7 +665,9 @@ public final class MenuBarContentView: NSView {
 
     /// Two lights stacked, download above upload. Green while that direction is
     /// moving, the bar's own ink sat back while it is idle, and both red when the
-    /// machine has no route out.
+    /// machine has no route out. Or, for the Internet Connection readout, one light:
+    /// green when the internet answers, red when it does not, the idle ink while it is
+    /// still checking.
     ///
     /// The second place this view colours itself without being asked, and the same
     /// defence as the low battery: green for traffic and red for no link is not a
@@ -666,6 +678,35 @@ public final class MenuBarContentView: NSView {
     private func drawStatusDot(_ item: MenuBarItemRender, x: CGFloat, colors: ItemColors,
                                scale: CGFloat, context: CGContext) {
         let diameter = Layout.statusDotDiameter
+
+        // The internet light: one dot where the pair would stack, on the same centre line
+        // and in the same three inks, so the two readouts read as one family.
+        if let light = item.connectivityLight {
+            let alpha = colors.mark.alphaComponent
+            let ink: CGColor
+            switch light {
+            case .online: ink = NSColor.systemGreen.withAlphaComponent(alpha).cgColor
+            case .offline: ink = NSColor.systemRed.withAlphaComponent(alpha).cgColor
+            case .checking: ink = colors.mark.withAlphaComponent(alpha * Layout.statusDotIdleAlpha).cgColor
+            }
+            let rect = snapped(CGRect(x: x, y: bounds.midY - diameter / 2,
+                                      width: diameter, height: diameter), scale: scale)
+            // Red and green are the one pair a red-green colour-blind reader cannot tell
+            // apart, and they are this light's whole vocabulary. With Differentiate
+            // Without Color on, offline is a ring rather than a disc, so the shape says
+            // it as well.
+            if light == .offline, model?.differentiatesWithoutColor == true {
+                let line = Layout.statusRingStroke
+                context.setStrokeColor(ink)
+                context.setLineWidth(line)
+                context.strokeEllipse(in: rect.insetBy(dx: line / 2, dy: line / 2))
+                return
+            }
+            context.setFillColor(ink)
+            context.fillEllipse(in: rect)
+            return
+        }
+
         let pairHeight = diameter * 2 + Layout.statusDotGap
         let top = bounds.midY + pairHeight / 2 - diameter
         let bottom = bounds.midY - pairHeight / 2

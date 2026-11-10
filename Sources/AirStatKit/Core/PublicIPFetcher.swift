@@ -10,8 +10,10 @@ public typealias PublicIPTransport =
 /// Looks up the machine's public IP address, off the sampling queue and only when the
 /// user has asked for it.
 ///
-/// This is the only code in the app that opens a connection to anything, so it holds
-/// itself to rules the other collectors do not need:
+/// This is one of the two places in the app's own code that send anything anywhere (the
+/// other is the opt-in internet check, `ConnectivityProbe`; Sparkle's update check is the
+/// third thing that does, in its own framework), so it holds itself to rules the other
+/// collectors do not need:
 ///
 /// - Nothing is sent until `setEnabled(true)` arrives from `general.fetchesPublicIP`,
 ///   which ships off. A fetcher nobody enabled never builds a session.
@@ -42,8 +44,8 @@ public final class PublicIPFetcher: @unchecked Sendable {
     /// api.ipify.org answers with the bare address as `text/plain`: no JSON envelope,
     /// no cookies, no redirect chain, no query string and no geolocation record that
     /// nobody asked for. The request therefore carries nothing the TCP connection would
-    /// not already reveal, which is the least this app can ask of the one third party
-    /// it talks to.
+    /// not already reveal, which is the least this app can ask of a third party it
+    /// talks to.
     public static let endpoint = URL(string: "https://api.ipify.org")!
 
     /// Said in place of an address while the feature is off, so the panel can leave the

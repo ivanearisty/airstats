@@ -101,11 +101,18 @@ struct GeneralPane: View {
             Section {
                 Toggle("Look up my public IP address",
                        isOn: settings.binding(\.general.fetchesPublicIP))
+                // The other setting that sends something off the machine, so it sits
+                // beside the first, off by default, under the same footer.
+                Toggle("Check my internet connection",
+                       isOn: settings.binding(\.general.checksConnectivity))
+                // Shown with the toggle off too, so the address can be chosen before the
+                // first request goes to the default one.
+                ConnectivityTargetField(settings: settings)
             } header: {
                 Text("Privacy")
             } footer: {
-                SettingsFootnote("Left off, the Network module shows your local "
-                                 + "addresses only and AirStats contacts nothing.")
+                SettingsFootnote("With both off, neither contacts anything, and the Network "
+                                 + "module shows your local addresses only.")
             }
         }
         .settingsFormStyle()

@@ -220,6 +220,41 @@ public struct MetricFormatter: Sendable {
         return "\(minutes)m"
     }
 
+    /// A round trip. Whole milliseconds up to a second, because a decimal on "9.4 ms" is
+    /// noise to anyone reading a light; then seconds, which a link only reaches when it
+    /// is in trouble and the extra digit is the trouble. Under a millisecond is "<1 ms"
+    /// rather than "0 ms": the loopback answers in tens of microseconds, and zero would
+    /// be a number nothing measured.
+    public func latency(_ seconds: TimeInterval?) -> String {
+        guard let seconds, seconds.isFinite, seconds >= 0 else { return Self.unavailable }
+        let milliseconds = (seconds * 1000).rounded()
+        if milliseconds < 1 { return "<1 ms" }
+        if milliseconds < 1000 { return fixed(milliseconds, decimals: 0) + " ms" }
+        return fixed(seconds, decimals: seconds < 9.95 ? 1 : 0) + " s"
+    }
+
+    /// What the Internet row in the panel and the widget says, or nil for no row at all:
+    /// while the check is off there is nothing to report, the same rule the public IP
+    /// row follows. `compact` leaves out why it is offline, for the widget's narrow line.
+    public func connectivitySummary(_ state: MetricState<ConnectivityReading>,
+                                    compact: Bool = false) -> String? {
+        switch state {
+        case .value(let reading) where reading.isOnline:
+            return reading.latency.map { "Online · \(latency($0))" } ?? "Online"
+        case .value(let reading):
+            guard !compact, let detail = reading.detail else { return "Offline" }
+            return "Offline · \(detail)"
+        case .failure(let failure):
+            if state.isCheckOff { return nil }
+            if failure == .pending { return "Checking…" }
+            // An address that cannot be used, a network without IPv4, a filter that
+            // blocks the ping: the check could not ask, which is not the same as the
+            // internet not answering. The reason is said where it can be fixed, in
+            // Settings, where there is room for it.
+            return "Can't check"
+        }
+    }
+
     public func compactUptime(_ seconds: TimeInterval) -> String {
         guard seconds >= 0, let total = Self.whole(seconds.rounded(.down)) else { return Self.unavailable }
         let days = total / 86400
@@ -297,6 +332,8 @@ public struct MetricFormatter: Sendable {
             return "4.05 GHz"
         case .networkThroughput, .networkUpload, .networkDownload:
             return networkUnit == .bits ? "999 Mbps" : "999 MB/s"
+        case .connectivity:
+            return "999 ms"
         case .diskActivity:
             return "999 MB/s"
         case .diskFree:
