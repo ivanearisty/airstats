@@ -31,6 +31,10 @@ struct MenuBarPane: View {
             Section {
                 readoutList
                 readoutListControls
+                if items.contains(where: { $0.metric == .connectivity && $0.isEnabled }) {
+                    ConnectivityReadoutNote(settings: settings,
+                                            snapshot: SettingsPreview.snapshot(engine))
+                }
             } header: {
                 Text("Readouts")
             }
@@ -321,6 +325,11 @@ struct MenuBarPane: View {
                            // menu bar look like", and greying it because the last
                            // sample is a few seconds old would read as the setting
                            // being broken. The real menu bar still dims.
-                           isStale: false)
+                           isStale: false,
+                           // The two states the real bar draws differently are drawn
+                           // here too, or the preview would answer the question wrongly.
+                           isSamplingPaused: engine?.activity == .suspended,
+                           differentiatesWithoutColor:
+                               NSWorkspace.shared.accessibilityDisplayShouldDifferentiateWithoutColor)
     }
 }

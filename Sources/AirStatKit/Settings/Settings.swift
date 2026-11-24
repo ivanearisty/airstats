@@ -84,6 +84,8 @@ public enum MenuBarMetric: String, Sendable, Codable, CaseIterable, Equatable, H
     case memoryUsage, memoryPressure
     case gpuUsage
     case networkThroughput, networkUpload, networkDownload
+    /// Whether the internet answers: the opt-in check, drawn as one light by default.
+    case connectivity
     case diskActivity, diskFree, diskUsage
     case battery, batteryTime, systemPower
     case fanSpeed
@@ -100,6 +102,7 @@ public enum MenuBarMetric: String, Sendable, Codable, CaseIterable, Equatable, H
         case .networkThroughput: return "Network (Up & Down)"
         case .networkUpload: return "Network Upload"
         case .networkDownload: return "Network Download"
+        case .connectivity: return "Internet Connection"
         case .diskActivity: return "Disk Activity"
         case .diskFree: return "Disk Free"
         case .diskUsage: return "Disk Usage"
@@ -118,7 +121,7 @@ public enum MenuBarMetric: String, Sendable, Codable, CaseIterable, Equatable, H
         case .cpuTemperature, .fanSpeed: return .thermal
         case .memoryUsage, .memoryPressure: return .memory
         case .gpuUsage: return .gpu
-        case .networkThroughput, .networkUpload, .networkDownload: return .network
+        case .networkThroughput, .networkUpload, .networkDownload, .connectivity: return .network
         case .diskActivity, .diskFree, .diskUsage: return .disk
         case .battery, .batteryTime, .systemPower: return .power
         case .uptime: return .system
@@ -144,6 +147,11 @@ public enum MenuBarMetric: String, Sendable, Codable, CaseIterable, Equatable, H
             // two lights can stand in for, and a pair is the only thing the
             // stacked style has to stack.
             return MenuBarDisplayStyle.general + [.statusDot, .stackedPair]
+        case .connectivity:
+            // A yes-or-no answer first, so the light leads, and it is what a new readout
+            // lands on. The latency is a number, but one sample of it says nothing on its
+            // own and there is no series behind it, so no graph.
+            return [.statusDot, .text, .iconAndText]
         case .diskActivity:
             // The other two-direction readout: read over write stacks the same
             // way up does over down.
@@ -162,9 +170,10 @@ public enum MenuBarMetric: String, Sendable, Codable, CaseIterable, Equatable, H
 ///
 /// The general styles are the number, the number's history, and the number with a mark
 /// saying which metric it is. The rest each draw one shape for the metrics that shape
-/// can honestly stand for: the system battery indicator for the charge, two activity
-/// lights for the up-and-down network readout, and a fill level for the readouts that
-/// are a fraction of a known ceiling.
+/// can honestly stand for: the system battery indicator for the charge, lights that say
+/// whether the network works (two activity lights for the up-and-down readout, one for
+/// whether the internet answers), and a fill level for the readouts that are a fraction
+/// of a known ceiling.
 public enum MenuBarDisplayStyle: String, Sendable, Codable, CaseIterable, Equatable, Hashable {
     case text
     case graph
@@ -849,9 +858,18 @@ public struct GeneralSettings: Sendable, Codable, Equatable {
     public var throttlesWhenOccluded: Bool
     /// Suspend sampling entirely while on battery below a threshold.
     public var pausesOnLowPower: Bool
-    /// Fetch the public IP address. One of the two features that leave the machine,
-    /// the other being Sparkle's update check, which keeps its own preference.
+    /// Fetch the public IP address. One of the three features that leave the machine,
+    /// with the internet check below and Sparkle's update check, which keeps its own
+    /// preference.
     public var fetchesPublicIP: Bool
+    /// Check that the internet answers, for the Internet Connection readout. Off until
+    /// the user turns it on, like the public IP lookup, and even then it sends nothing
+    /// while nothing on screen could show the answer.
+    public var checksConnectivity: Bool
+    /// What the check asks, as the user typed it: an IPv4 address to ping, or an address
+    /// to ask over HTTPS. Parsed where it is used, so a hand-edited file with nonsense
+    /// in it still loads, and the nonsense is reported rather than silently replaced.
+    public var connectivityTarget: String
     public var showsDockIcon: Bool
 
     public init(updateInterval: TimeInterval = 2,
@@ -864,6 +882,8 @@ public struct GeneralSettings: Sendable, Codable, Equatable {
                 throttlesWhenOccluded: Bool = true,
                 pausesOnLowPower: Bool = false,
                 fetchesPublicIP: Bool = false,
+                checksConnectivity: Bool = false,
+                connectivityTarget: String = ConnectivityTarget.defaultText,
                 showsDockIcon: Bool = false) {
         self.updateInterval = updateInterval
         self.launchAtLogin = launchAtLogin
@@ -875,6 +895,8 @@ public struct GeneralSettings: Sendable, Codable, Equatable {
         self.throttlesWhenOccluded = throttlesWhenOccluded
         self.pausesOnLowPower = pausesOnLowPower
         self.fetchesPublicIP = fetchesPublicIP
+        self.checksConnectivity = checksConnectivity
+        self.connectivityTarget = connectivityTarget
         self.showsDockIcon = showsDockIcon
     }
 
@@ -883,7 +905,7 @@ public struct GeneralSettings: Sendable, Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case updateInterval, launchAtLogin, appearance, temperatureUnit, networkRateUnit
         case byteUnitStyle, showsPercentSign, throttlesWhenOccluded, pausesOnLowPower
-        case fetchesPublicIP, showsDockIcon
+        case fetchesPublicIP, checksConnectivity, connectivityTarget, showsDockIcon
     }
 
     public init(from decoder: Decoder) throws {
@@ -898,6 +920,8 @@ public struct GeneralSettings: Sendable, Codable, Equatable {
         throttlesWhenOccluded = c.value(.throttlesWhenOccluded, or: true)
         pausesOnLowPower = c.value(.pausesOnLowPower, or: false)
         fetchesPublicIP = c.value(.fetchesPublicIP, or: false)
+        checksConnectivity = c.value(.checksConnectivity, or: false)
+        connectivityTarget = c.value(.connectivityTarget, or: ConnectivityTarget.defaultText)
         showsDockIcon = c.value(.showsDockIcon, or: false)
     }
 }
@@ -1068,6 +1092,32 @@ public struct Settings: Sendable, Codable, Equatable {
         // System info is cheap, static, and needed for the about/uptime readouts.
         sources.insert(.system)
         return sources
+    }
+
+    /// Whether the internet check should be sending anything right now.
+    ///
+    /// The same question `requiredSources` answers for collectors, asked of a feature
+    /// that costs something outside the machine, and asked more strictly: on only while
+    /// the user has turned it on and something on screen could show the answer.
+    /// That is an Internet Connection readout in a menu bar that is showing; the panel,
+    /// whose Network module has an Internet row, and which pings from the moment it opens
+    /// so the answer is ready by the time a collapsed module is expanded; or the desktop
+    /// widget's Network module when it is expanded, since compact shows a module's first
+    /// detail only and the Internet line is not it.
+    public func connectivityCheck(panelVisible: Bool, desktopWidgetVisible: Bool) -> ConnectivityCheck {
+        guard general.checksConnectivity else { return .off }
+        let target: ConnectivityTarget
+        switch ConnectivityTarget.parse(general.connectivityTarget) {
+        case .success(let parsed): target = parsed
+        // Reported whether or not anything shows it: the settings pane is where it is
+        // fixed, and the pane reads the same state the readout would.
+        case .failure(let error): return .invalid(error.message)
+        }
+        let shown = (menuBar.isVisible && menuBar.enabledItems.contains { $0.metric == .connectivity })
+            || panelVisible
+            || (desktopWidgetVisible && !desktopWidget.isCompact
+                && desktopWidget.modules.contains(.network))
+        return shown ? .active(target) : .idle
     }
 
     /// Number of retained samples implied by the chart history and update interval.

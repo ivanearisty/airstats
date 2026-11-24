@@ -232,6 +232,11 @@ extension PanelModuleView {
                     // after the label, and an IPv6 answer is three times longer again.
                     ReadoutRow("Public IP", publicIP)
                 }
+                // Full width for the same reason: "Offline · No reply from 1.1.1.1" is the
+                // line that matters most, and half a row would cut it at "No re…".
+                if let internet = formatter.connectivitySummary(network.connectivity) {
+                    ReadoutRow("Internet", internet)
+                }
                 if let wifi = network.wifi, let quality = wifi.signalQuality {
                     // The network's name labels its own signal bar; a row that said
                     // "Signal" and a row that said "Network" would be two lines

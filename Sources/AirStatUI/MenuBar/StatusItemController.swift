@@ -58,6 +58,9 @@ public final class StatusItemController {
     private var activeItem: NSStatusItem?
     private var renderTask: Task<Void, Never>?
     private var lastReportedVisibility: Bool?
+    /// Differentiate Without Color is a system setting rather than an observable
+    /// property, so it gets a notification observer of its own.
+    private var accessibilityObserver: NSObjectProtocol?
 
     /// One status item and the view drawing into it. `readout` is the id of the single
     /// readout it draws, or nil for the combined item, which draws them all.
@@ -77,12 +80,23 @@ public final class StatusItemController {
     public func install() {
         syncLayout()
         beginRendering()
+        if accessibilityObserver == nil {
+            accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+                object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.render() }
+            }
+        }
         render()
     }
 
     public func remove() {
         renderTask?.cancel()
         renderTask = nil
+        if let accessibilityObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(accessibilityObserver)
+            self.accessibilityObserver = nil
+        }
         tearDownItems()
         layout = nil
     }
@@ -232,6 +246,9 @@ public final class StatusItemController {
         let changes = ObservedChanges { [engine, settings] in
             _ = engine.snapshot
             _ = settings.revision
+            // Entering the Low Power pause delivers no snapshot, and the internet light
+            // has to stop claiming an answer about now when it does.
+            _ = engine.activity
         }
         renderTask = Task { @MainActor [weak self] in
             for await _ in changes {
@@ -249,7 +266,10 @@ public final class StatusItemController {
         let model = MenuBarRenderModel(snapshot: engine.snapshot,
                                        history: engine.history,
                                        settings: settings.settings,
-                                       isStale: engine.isStale)
+                                       isStale: engine.isStale,
+                                       isSamplingPaused: engine.activity == .suspended,
+                                       differentiatesWithoutColor:
+                                           NSWorkspace.shared.accessibilityDisplayShouldDifferentiateWithoutColor)
         for entry in hosted {
             let slice = StatusItemController.slice(model, readout: entry.readout)
             guard entry.content.update(with: slice) else { continue }

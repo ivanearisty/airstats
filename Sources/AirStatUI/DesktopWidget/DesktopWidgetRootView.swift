@@ -293,6 +293,11 @@ private struct DesktopWidgetModuleView: View {
                 DesktopWidgetDetail("up", "Upload", formatter.networkRate(network.uploadBytesPerSecond)),
                 DesktopWidgetDetail("type", "Link", network.connectionType.label),
             ]
+            // Beside the link, since the two answer one question between them: is there a
+            // connection, and does it reach anything.
+            if let internet = formatter.connectivitySummary(network.connectivity, compact: true) {
+                details.append(DesktopWidgetDetail("internet", "Internet", internet))
+            }
             if let ssid = network.wifi?.ssid {
                 details.append(DesktopWidgetDetail("ssid", "Network", ssid))
             }
