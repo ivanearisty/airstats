@@ -86,7 +86,7 @@ public enum MenuBarMetric: String, Sendable, Codable, CaseIterable, Equatable, H
     case networkThroughput, networkUpload, networkDownload
     /// Whether the internet answers: the opt-in check, drawn as one light by default.
     case connectivity
-    case diskActivity, diskFree
+    case diskActivity, diskFree, diskUsage
     case battery, batteryTime, systemPower
     case fanSpeed
     case uptime
@@ -105,6 +105,7 @@ public enum MenuBarMetric: String, Sendable, Codable, CaseIterable, Equatable, H
         case .connectivity: return "Internet Connection"
         case .diskActivity: return "Disk Activity"
         case .diskFree: return "Disk Free"
+        case .diskUsage: return "Disk Usage"
         case .battery: return "Battery"
         case .batteryTime: return "Battery Time Remaining"
         case .systemPower: return "System Power"
@@ -121,7 +122,7 @@ public enum MenuBarMetric: String, Sendable, Codable, CaseIterable, Equatable, H
         case .memoryUsage, .memoryPressure: return .memory
         case .gpuUsage: return .gpu
         case .networkThroughput, .networkUpload, .networkDownload, .connectivity: return .network
-        case .diskActivity, .diskFree: return .disk
+        case .diskActivity, .diskFree, .diskUsage: return .disk
         case .battery, .batteryTime, .systemPower: return .power
         case .uptime: return .system
         }
@@ -142,15 +143,20 @@ public enum MenuBarMetric: String, Sendable, Codable, CaseIterable, Equatable, H
             // should draw by default, so it leads the list.
             return [.battery] + MenuBarDisplayStyle.general
         case .networkThroughput:
-            // The one readout that is already two directions, so it is the one the
-            // two lights can stand in for.
-            return MenuBarDisplayStyle.general + [.statusDot]
+            // The readout that is already two directions, so it is the one the
+            // two lights can stand in for, and a pair is the only thing the
+            // stacked style has to stack.
+            return MenuBarDisplayStyle.general + [.statusDot, .stackedPair]
         case .connectivity:
             // A yes-or-no answer first, so the light leads, and it is what a new readout
             // lands on. The latency is a number, but one sample of it says nothing on its
             // own and there is no series behind it, so no graph.
             return [.statusDot, .text, .iconAndText]
-        case .cpuUsage, .gpuUsage, .memoryUsage, .memoryPressure:
+        case .diskActivity:
+            // The other two-direction readout: read over write stacks the same
+            // way up does over down.
+            return MenuBarDisplayStyle.general + [.stackedPair]
+        case .cpuUsage, .gpuUsage, .memoryUsage, .memoryPressure, .diskUsage:
             // The readouts that are a fraction of a known ceiling, which is the only
             // thing a fill level can honestly draw.
             return MenuBarDisplayStyle.general + [.bar]
@@ -176,6 +182,9 @@ public enum MenuBarDisplayStyle: String, Sendable, Codable, CaseIterable, Equata
     case battery
     case statusDot
     case bar
+    /// A paired readout drawn as two stacked rows — glyphs in one shared column,
+    /// values right-aligned beside them — instead of both directions on one line.
+    case stackedPair
 
     /// The styles any numeric readout can take. The indicator styles are left out
     /// because each draws one kind of metric and nothing else.
@@ -190,17 +199,20 @@ public enum MenuBarDisplayStyle: String, Sendable, Codable, CaseIterable, Equata
         case .battery: return "Battery Indicator"
         case .statusDot: return "Status Dot"
         case .bar: return "Compact Bar"
+        case .stackedPair: return "Stacked Pair"
         }
     }
 
     /// Whether a caption would add anything. It would not for the two styles that
     /// already name their metric with a glyph, and the status dots are meant to be
     /// the smallest thing on the bar, so they carry no text at all. A bar is an
-    /// anonymous shape, so the caption is what says which fraction it is.
+    /// anonymous shape, so the caption is what says which fraction it is. The
+    /// stacked pair is already the two rows a 22-point bar fits — a caption on top
+    /// would be a third.
     public var supportsCaption: Bool {
         switch self {
         case .text, .graph, .textAndGraph, .bar: return true
-        case .iconAndText, .battery, .statusDot: return false
+        case .iconAndText, .battery, .statusDot, .stackedPair: return false
         }
     }
 }
@@ -371,26 +383,32 @@ public enum PanelModule: String, Sendable, Codable, CaseIterable, Equatable, Has
 /// process row count and sort, sparklines, focus behaviour. All of it is gone: the
 /// panel is a glance surface reached by one click, and a settings pane with eight
 /// controls governing it was more configuration than the surface earns. What remains
-/// is the one piece of state the user still sets, and they set it by clicking a
-/// heading in the panel itself rather than by opening a window.
+/// is state the user sets in the panel itself, by clicking a heading or a process
+/// sort, rather than by opening a window.
 public struct PanelSettings: Sendable, Codable, Equatable {
     /// Modules the user has collapsed to just their summary row.
     public var collapsedModules: Set<PanelModule>
     /// Draw the history chart under an expanded module's rows.
     public var showsHistoryChart: Bool
+    /// What Top Processes ranks by, picked in the module itself.
+    public var processSort: ProcessSortKey
 
     /// Fixed layout, previously the `width` setting. 380pt gives a detail grid three
     /// columns and a process name room beside its icon, and still leaves the panel
     /// narrower than the narrowest MacBook screen at any status item position.
     public static let width: Double = 380
-    /// Previously `processRowCount` and `processSortKey`.
+    /// Previously `processRowCount`.
     public static let processRowCount = 5
-    public static let processSortKey: ProcessSortKey = .cpu
+    /// The ways Top Processes can rank. Memory is left out because the Memory module
+    /// already lists the biggest users: this list answers "what is busy".
+    public static let processSortOptions: [ProcessSortKey] = [.cpu, .diskIO, .energy]
 
     public init(collapsedModules: Set<PanelModule> = PanelSettings.defaultCollapsed,
-                showsHistoryChart: Bool = true) {
+                showsHistoryChart: Bool = false,
+                processSort: ProcessSortKey = .cpu) {
         self.collapsedModules = Self.accordion(collapsedModules)
         self.showsHistoryChart = showsHistoryChart
+        self.processSort = Self.processSortOptions.contains(processSort) ? processSort : .cpu
     }
 
     /// The collapsed set after a click on `module`'s header.
@@ -436,8 +454,10 @@ public struct PanelSettings: Sendable, Codable, Equatable {
     /// a new release's modules appear without a stored order having to be migrated.
     public var visibleModules: [PanelModule] { PanelModule.allCases }
 
+    /// `processSort` rather than the old `processSortKey`, which files from before the
+    /// panel pane was removed may still carry with a key this list no longer offers.
     private enum CodingKeys: String, CodingKey {
-        case collapsedModules, showsHistoryChart
+        case collapsedModules, showsHistoryChart, processSort
     }
 
     /// Decoded leniently, and settings files written before the panel pane was removed
@@ -446,7 +466,9 @@ public struct PanelSettings: Sendable, Codable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         collapsedModules = Self.accordion(c.value(.collapsedModules, or: PanelSettings.defaultCollapsed))
-        showsHistoryChart = c.value(.showsHistoryChart, or: true)
+        showsHistoryChart = c.value(.showsHistoryChart, or: false)
+        let sort = c.value(.processSort, or: ProcessSortKey.cpu)
+        processSort = Self.processSortOptions.contains(sort) ? sort : .cpu
     }
 }
 

@@ -46,6 +46,7 @@ enum DiagnosticsCLI {
       --verbose       print every sample, not just the last
       --connectivity A   run the internet check against A (an IPv4 address or an
                          https:// address); off unless given, so the probe contacts nothing
+      --menubar       sample as the menu bar does with the panel closed
 
     Render surfaces:  menuBar, panel, desktopWidget, settings   (omit for all)
     Render flags:
@@ -54,8 +55,11 @@ enum DiagnosticsCLI {
       --light / --dark   appearance (omit for both)
       --scale N       backing scale, repeatable (omit for 1 and 2)
       --tint C        metric colour as #RRGGBB or r,g,b; the panel stays monochrome
+      --menubar M[:S][,M…]  menu bar readouts to draw, as MenuBarMetric names with an optional :style
       --readouts L    menu bar readouts as metric[:style],… e.g. connectivity,networkThroughput:statusDot
       --without-color draw as macOS does with Differentiate Without Color turned on
+      --open M[,M…]   panel modules to draw expanded
+      --sort K        what Top Processes ranks by: cpu, diskIO or energy
 
     Examples:
       AirStats --probe cpu --repeat 5 --interval 1 --verbose
@@ -71,6 +75,7 @@ enum DiagnosticsCLI {
         var interval: TimeInterval = 1
         var verbose = false
         var connectivity: ConnectivityTarget?
+        var activity = SamplingActivity.panel
 
         var index = 0
         while index < arguments.count {
@@ -93,6 +98,8 @@ enum DiagnosticsCLI {
                     FileHandle.standardError.write(Data("--connectivity: \(error.message)\n".utf8))
                     exit(2)
                 }
+            case "--menubar":
+                activity = .menuBar
             default:
                 if let id = CollectorID(rawValue: argument) {
                     collectors.insert(id)
@@ -116,7 +123,8 @@ enum DiagnosticsCLI {
             repeatCount: repeatCount,
             interval: interval,
             verbose: verbose,
-            connectivity: connectivity
+            connectivity: connectivity,
+            activity: activity
         )
         print(MetricProbe.run(options))
     }
